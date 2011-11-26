@@ -23,23 +23,51 @@
 #include "config.h"
 
 #include <avr/io.h>
+#include <util/delay.h>
+
+uint8_t spindleEnabled;
+int spindleDirection;
+uint32_t spindleSpeed;
 
 void spindle_init()
 {
+  spindleEnabled = 0;
+  spindleSpeed = 0;
+  spindleDirection = 0;
   SPINDLE_ENABLE_DDR |= 1<<SPINDLE_ENABLE_BIT;
 }
 
 void spindle_run(int direction, uint32_t rpm) 
 {
-  if(direction >= 0) {
-    SPINDLE_DIRECTION_PORT &= ~(1<<SPINDLE_DIRECTION_BIT);
-  } else {
-    SPINDLE_DIRECTION_PORT |= 1<<SPINDLE_DIRECTION_BIT;
-  }
   SPINDLE_ENABLE_PORT |= 1<<SPINDLE_ENABLE_BIT;
+  spindleEnabled = 1;
+  spindleSpeed = rpm;
+  spindleDirection = direction;
+  // wait a second for the spindle to spin up.
+  _delay_ms(MOTOR_SPIN_UP_AND_DOWN_TIME);
 }
 
 void spindle_stop()
 {
   SPINDLE_ENABLE_PORT &= ~(1<<SPINDLE_ENABLE_BIT);
+  spindleEnabled = 0;
+  spindleSpeed = 0;
+  spindleDirection = 0;
+  // wait a second for the spindle to spin down.
+  _delay_ms(MOTOR_SPIN_UP_AND_DOWN_TIME);
+}
+
+void spindle_pause()
+{
+  SPINDLE_ENABLE_PORT &= ~(1<<SPINDLE_ENABLE_BIT);
+  // wait a second for the spindle to spin down.
+  _delay_ms(MOTOR_SPIN_UP_AND_DOWN_TIME);
+}
+
+void spindle_resume()
+{
+  if(spindleEnabled)
+  {
+    spindle_run(spindleDirection, spindleSpeed);
+  }
 }

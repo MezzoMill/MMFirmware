@@ -19,6 +19,8 @@
 */
 
 #include <avr/io.h>
+#include <avr/pgmspace.h>
+
 #include "settings.h"
 #include "motion_control.h"
 #include <util/delay.h>
@@ -29,6 +31,7 @@
 #include "planner.h"
 #include "wiring_serial.h"
 
+#include "cap_control.h"
 
 void mc_dwell(uint32_t milliseconds) 
 {
@@ -49,7 +52,10 @@ void mc_arc(double theta, double angular_travel, double radius, double linear_tr
   int axis_linear, double feed_rate, int invert_feed_rate, double *position)
 {      
   int acceleration_manager_was_enabled = plan_is_acceleration_manager_enabled();
-  plan_set_acceleration_manager_enabled(FALSE); // disable acceleration management for the duration of the arc
+	if(acceleration_manager_was_enabled == TRUE)
+	{
+		plan_set_acceleration_manager_enabled(FALSE); // disable acceleration management for the duration of the arc
+	}
   double millimeters_of_travel = hypot(angular_travel*radius, labs(linear_travel));
   if (millimeters_of_travel == 0.0) { return; }
   uint16_t segments = ceil(millimeters_of_travel/settings.mm_per_arc_segment);
@@ -76,11 +82,125 @@ void mc_arc(double theta, double angular_travel, double radius, double linear_tr
     target[axis_2] = center_y+cos(theta)*radius;
     plan_buffer_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], feed_rate, invert_feed_rate);
   }
-  plan_set_acceleration_manager_enabled(acceleration_manager_was_enabled);
+	
+  if(acceleration_manager_was_enabled == TRUE)
+  {
+	  plan_set_acceleration_manager_enabled(acceleration_manager_was_enabled);
+  }
 }
 #endif
 
-void mc_go_home()
+//void mc_go_home()
+//{
+//  st_go_home();
+//  clear_vector(position); // By definition this is location [0, 0, 0]
+//}
+
+void mc_do_homing_with_params(int axis, double feedRate, double moveVal, double thresholdToStop, uint16_t maxNumTimesToMove, double *position)
 {
-  st_go_home();
+	int acceleration_manager_was_enabled = plan_is_acceleration_manager_enabled();
+	plan_set_acceleration_manager_enabled(FALSE); // disable acceleration management for the duration of the homing
+	uint8_t isTimedOut = FALSE;
+	st_synchronize();
+	if( cc_axisAverageCapValue(axis, 10*5 ) != 0)
+	{
+		isTimedOut = TRUE;
+	}
+	uint16_t numTimesMoved = 0;
+	for(; numTimesMoved < maxNumTimesToMove && isTimedOut == FALSE && cc_getAverageVal() < thresholdToStop; numTimesMoved = numTimesMoved+1)
+	{
+		st_synchronize();
+		position[axis] = 0;
+		
+		if(axis == 0)
+		{
+			plan_redefine_current_position(0, position[Y_AXIS], position[Z_AXIS]);
+			plan_buffer_line(moveVal, position[Y_AXIS], position[Z_AXIS], feedRate, FALSE);
+		} else if (axis == 1) {
+			plan_redefine_current_position(position[X_AXIS], 0, position[Z_AXIS]);
+			plan_buffer_line(position[X_AXIS], moveVal, position[Z_AXIS], feedRate, FALSE);
+		} else if (axis == 2) {
+			plan_redefine_current_position(position[X_AXIS], position[Y_AXIS], 0);
+			plan_buffer_line(position[X_AXIS], position[Y_AXIS], moveVal, feedRate, FALSE);
+		}
+		
+		st_synchronize();
+		if( cc_axisAverageCapValue(axis, 10*5 ) != 0)
+		{
+			isTimedOut = TRUE;
+		}
+	}
+	
+	printString("TimesMoved = ");
+	printInteger(numTimesMoved);
+	print_newline();
+	
+	position[axis] = 0;
+	if(axis == 0)
+	{
+		plan_redefine_current_position(0, position[Y_AXIS], position[Z_AXIS]);
+	} else if (axis == 1) {
+		plan_redefine_current_position(position[X_AXIS], 0, position[Z_AXIS]);
+	} else if (axis == 2) {
+		plan_redefine_current_position(position[X_AXIS], position[Y_AXIS], 0);
+	}
+	plan_set_acceleration_manager_enabled(acceleration_manager_was_enabled);
+}
+
+void mc_do_mill_homing_with_params(double feedRate, double moveVal, double thresholdToStop, uint16_t maxNumTimesToMove, double *position)
+{
+	int acceleration_manager_was_enabled = plan_is_acceleration_manager_enabled();
+	plan_set_acceleration_manager_enabled(FALSE); // disable acceleration management for the duration of the homing
+	// axis is always z
+	int axis = Z_AXIS;
+	uint8_t isTimedOut = FALSE;
+	st_synchronize();
+	if( cc_endMillAverageCapValue( 10*5 ) != 0)
+	{
+		isTimedOut = TRUE;
+	}
+	
+	uint16_t numTimesMoved = 0;
+	for(; numTimesMoved < maxNumTimesToMove && isTimedOut == FALSE && cc_getAverageVal() < thresholdToStop; numTimesMoved = numTimesMoved+1)
+	{
+		st_synchronize();
+		position[axis] = 0;
+		plan_redefine_current_position(position[X_AXIS], position[Y_AXIS], 0);
+		plan_buffer_line(position[X_AXIS], position[Y_AXIS], moveVal, feedRate, FALSE);
+		
+		st_synchronize();
+		if( cc_endMillAverageCapValue( 10*5 ) != 0)
+		{
+			isTimedOut = TRUE;
+		}
+	}
+	
+	printString("TimesMoved = ");
+	printInteger(numTimesMoved);
+	print_newline();
+	
+	position[axis] = 0;
+	plan_redefine_current_position(position[X_AXIS], position[Y_AXIS], 0);
+	
+	plan_set_acceleration_manager_enabled(acceleration_manager_was_enabled);
+}
+
+void mc_cur_pos_is_origin(int selection, double *position)
+{
+	if(selection == -1)
+	{
+		clear_vector(position); // By definition this is location [0, 0, 0]
+		plan_redefine_current_position(0, 0, 0);
+	} else if (selection >= 0 && selection <=2 )
+	{
+		position[selection] = 0;
+		if(selection == 0)
+		{
+			plan_redefine_current_position(0, position[Y_AXIS], position[Z_AXIS]);
+		} else if (selection == 1) {
+			plan_redefine_current_position(position[X_AXIS], 0, position[Z_AXIS]);
+		} else if (selection == 2) {
+			plan_redefine_current_position(position[X_AXIS], position[Y_AXIS], 0);
+		}
+	}
 }

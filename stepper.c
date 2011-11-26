@@ -32,6 +32,8 @@
 #include "planner.h"
 #include "wiring_serial.h"
 
+#include "serial_protocol.h"
+#include <avr/pgmspace.h>
 
 // Some useful constants
 #define STEP_MASK ((1<<X_STEP_BIT)|(1<<Y_STEP_BIT)|(1<<Z_STEP_BIT)) // All step bits
@@ -214,10 +216,20 @@ SIGNAL(TIMER2_OVF_vect)
 // Initialize and start the stepper motor subsystem
 void st_init()
 {
+	// Set the LID bit to be input
+	// When it is held low everything pauses
+	LID_DDR &= ~(1<<IS_ENCLOSURE_LID_OPEN_BIT);
+	// detect if we lose power from the power supply
+	// if that happens we force the user to
+	// Ensure the power is on
+	// disconnect the usb cable
+	// reconnect the usb cable 
+	POWER_DETECTION_DDR &= ~(1<<POWER_DETECTION_BIT);
+	
 	// Configure directions of interface pins
   STEPPING_DDR   |= STEPPING_MASK;
   STEPPING_PORT = (STEPPING_PORT & ~STEPPING_MASK) | settings.invert_mask;
-  LIMIT_DDR &= ~(LIMIT_MASK);
+  //LIMIT_DDR &= ~(LIMIT_MASK);
   STEPPERS_ENABLE_DDR |= 1<<STEPPERS_ENABLE_BIT;
   
 	// waveform generation = 0100 = CTC
@@ -240,7 +252,7 @@ void st_init()
   trapezoid_tick_cycle_counter = 0;
   
   // set enable pin     
-  STEPPERS_ENABLE_PORT |= 1<<STEPPERS_ENABLE_BIT;
+  STEPPERS_ENABLE_PORT |= STEPPERS_ENABLE_SIGNAL<<STEPPERS_ENABLE_BIT;
      
   sei();
 }
@@ -248,7 +260,43 @@ void st_init()
 // Block until all buffered steps are executed
 void st_synchronize()
 {
-  while(plan_get_current_block()) { sleep_mode(); }    
+  while(plan_get_current_block()) { 
+	  st_pause_wait_resume();
+	  sleep_mode(); 
+  }    
+}
+
+void st_pause_wait_resume()
+{
+//	if((LID_PIN & (1<<IS_ENCLOSURE_LID_OPEN_BIT)) == LID_IS_OPEN)
+//	{
+//		//disable the interrupt while we wait for the lid to close thus pausing the motion
+//		DISABLE_STEPPER_DRIVER_INTERRUPT();  
+//		spindle_pause();
+//		printPgmString(PSTR("::pause::\r\n"));
+//		while ((LID_PIN & (1<<IS_ENCLOSURE_LID_OPEN_BIT)) == LID_IS_OPEN)
+//		{
+//			_delay_ms(100);
+//		}
+//		printPgmString(PSTR("::resume::\r\n"));
+//		spindle_resume();
+//		// re-enable the interrupt
+//		ENABLE_STEPPER_DRIVER_INTERRUPT();  
+//	}
+//	
+	// detect if power is off and stop everything!
+	if((POWER_DETECTION_PIN & (1<<POWER_DETECTION_BIT)) == POWER_IS_OFF)
+	{
+		DISABLE_STEPPER_DRIVER_INTERRUPT();
+		spindle_pause();
+		// If the power is off while we are on then things are BAD. Force user to restart.
+		while(TRUE)
+		{
+			// TODO_MM - Do I need to print power off here too or is it certain to get read?
+			printPgmString(PSTR("::power_off::\r\n"));
+			_delay_ms(1000);
+		}
+	}
 }
 
 // Configures the prescaler and ceiling of timer 1 to produce the given rate as accurately as possible.

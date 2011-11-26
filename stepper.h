@@ -37,4 +37,6 @@ void st_go_home();
 // to notify the subsystem that it is time to go to work.
 void st_wake_up();
 
+void st_pause_wait_resume();
+
 #endif

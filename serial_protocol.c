@@ -27,14 +27,19 @@
 #include <math.h>
 #include "nuts_bolts.h"
 #include <avr/pgmspace.h>
-#define LINE_BUFFER_SIZE 50
+//#define LINE_BUFFER_SIZE 50
+
+#include "stepper.h"
 
 static char line[LINE_BUFFER_SIZE];
 static uint8_t char_counter;
 
+uint8_t paused;
+
 void status_message(int status_code) {
   switch(status_code) {          
     case GCSTATUS_OK:
+    st_pause_wait_resume(); 
     printPgmString(PSTR("ok\n\r")); break;
     case GCSTATUS_BAD_NUMBER_FORMAT:
     printPgmString(PSTR("error: Bad number format\n\r")); break;
@@ -51,11 +56,22 @@ void status_message(int status_code) {
   }
 }
 
+void sp_init_must_be_first()
+{
+	 beginSerial();
+}
+
 void sp_init() 
 {
-  beginSerial(BAUD_RATE);  
-  printPgmString(PSTR("\r\nGrbl " GRBL_VERSION));
-  printPgmString(PSTR("\r\n"));  
+  paused = FALSE;
+  sp_millInfo();
+}
+
+void sp_millInfo()
+{
+	printPgmString(PSTR("\r\nMezzoMill "));
+	printPgmString(PSTR(MM_VERSION));
+	print_newline();
 }
 
 void sp_process()
@@ -65,6 +81,7 @@ void sp_process()
   {
     if((char_counter > 0) && ((c == '\n') || (c == '\r'))) {  // Line is complete. Then execute!
       line[char_counter] = 0; // treminate string
+	  printString(line); print_newline();
       status_message(gc_execute_line(line));
       char_counter = 0; // reset line buffer index
     } else if (c <= ' ') { // Throw away whitepace and control characters

@@ -22,6 +22,9 @@
 
 // Initialize the serial protocol
 void sp_init();
+void sp_init_must_be_first();
+
+void sp_millInfo();
 
 // Read command lines from the serial port and execute them as they
 // come in. Blocks until the serial buffer is emptied. 

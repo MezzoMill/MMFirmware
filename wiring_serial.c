@@ -23,30 +23,37 @@
 */
 
 //#include "wiring_private.h"
+#include "wiring_serial.h"
 #include <math.h>
-#include <stdlib.h>
 #include <avr/pgmspace.h>
 #include <avr/interrupt.h>
+
+#include "mm_constants.h"
 
 // Define constants and variables for buffering incoming serial data.  We're
 // using a ring buffer (I think), in which rx_buffer_head is the index of the
 // location to which to write the next incoming character and rx_buffer_tail
 // is the index of the location from which to read.
+// use only powers of 2 for the buffer size to produce optimal code
+// 8, 16, 32, 64, 128 or 256 (don't use 256. Could cause problems with uchar math.)
 #ifdef __AVR_ATmega328P__
-#define RX_BUFFER_SIZE 256
+#define RX_BUFFER_SIZE 128
 #else
 #define RX_BUFFER_SIZE 64
 #endif
+// output buffer
+// set to 0 to disable the output buffer altogether (saves space)
+#define TX_BUFFER_SIZE 0
 
 unsigned char rx_buffer[RX_BUFFER_SIZE];
 
 int rx_buffer_head = 0;
 int rx_buffer_tail = 0;
 
-void beginSerial(long baud)
+void beginSerial()
 {
-	UBRR0H = ((F_CPU / 16 + baud / 2) / baud - 1) >> 8;
-	UBRR0L = ((F_CPU / 16 + baud / 2) / baud - 1);
+	UBRR0H = ((F_CPU / 16 + BAUD_RATE / 2) / BAUD_RATE - 1) >> 8;
+	UBRR0L = ((F_CPU / 16 + BAUD_RATE / 2) / BAUD_RATE - 1);
 	
 	/* baud doubler off  - Only needed on Uno XXX */
   UCSR0A &= ~(1 << U2X0);
@@ -61,17 +68,34 @@ void beginSerial(long baud)
 	// defaults to 8-bit, no parity, 1 stop bit
 }
 
-void serialWrite(unsigned char c)
-{
-	while (!(UCSR0A & (1 << UDRE0)))
-		;
+// MM_COMMENT - I am not currently doing anything with this but if I start running out of space this would be a
+// good place to start
 
-	UDR0 = c;
+// advanced function, saves ~200 bytes because it doesn't use the long division
+// prescaler for the baud rate can be found using the formula
+// prescaler = fClock / (16 * baud rate) - 1
+// see beginSerial
+void beginSerialWithPrescaler(unsigned int prescaler)
+{
+	UBRR0H = prescaler >> 8;
+	UBRR0L = prescaler;
+	
+	// enable rx and tx
+	sbi(UCSR0B, RXEN0);
+	sbi(UCSR0B, TXEN0);
+	
+	// enable interrupt on complete reception of a byte
+	sbi(UCSR0B, RXCIE0);
+	
+	// defaults to 8-bit, no parity, 1 stop bit
 }
 
 int serialAvailable()
 {
-	return (RX_BUFFER_SIZE + rx_buffer_head - rx_buffer_tail) % RX_BUFFER_SIZE;
+	unsigned char i = RX_BUFFER_SIZE + rx_buffer_head - rx_buffer_tail;
+	i %= RX_BUFFER_SIZE;
+
+	return i;
 }
 
 int serialRead()
@@ -81,7 +105,8 @@ int serialRead()
 		return -1;
 	} else {
 		unsigned char c = rx_buffer[rx_buffer_tail];
-		rx_buffer_tail = (rx_buffer_tail + 1) % RX_BUFFER_SIZE;
+		rx_buffer_tail = rx_buffer_tail + 1;
+		rx_buffer_tail %= RX_BUFFER_SIZE;
 		return c;
 	}
 }
@@ -99,8 +124,10 @@ void serialFlush()
 SIGNAL(USART_RX_vect)
 {
 	unsigned char c = UDR0;
-	int i = (rx_buffer_head + 1) % RX_BUFFER_SIZE;
-
+	
+	unsigned char i = rx_buffer_head + 1;
+	i %= RX_BUFFER_SIZE;
+	
 	// if we should be storing the received character into the location
 	// just before the tail (meaning that the head would advance to the
 	// current location of the tail), we're about to overflow the buffer
@@ -110,6 +137,87 @@ SIGNAL(USART_RX_vect)
 		rx_buffer_head = i;
 	}
 }
+
+// buffered output
+#if (TX_BUFFER_SIZE > 0 )
+
+// TX is buffered
+// ************************
+// tested only for ATmega168
+// ************************
+
+unsigned char tx_buffer[TX_BUFFER_SIZE];
+
+unsigned char tx_buffer_head = 0;
+volatile unsigned char tx_buffer_tail = 0;
+
+
+// interrupt called on Data Register Empty
+SIGNAL(USART_UDRE_vect) 
+{
+	// temporary tx_buffer_tail 
+	// (to optimize for volatile, there are no interrupts inside an interrupt routine)
+	unsigned char tail = tx_buffer_tail;
+	
+	// get a byte from the buffer	
+	unsigned char c = tx_buffer[tail];
+	// send the byte
+	UDR0 = c;
+	
+	// update tail position
+	tail ++;
+	tail %= TX_BUFFER_SIZE;
+	
+	// if the buffer is empty,  disable the interrupt
+	if (tail == tx_buffer_head) {
+		UCSR0B &=  ~(1 << UDRIE0);
+		
+	}
+	
+	tx_buffer_tail = tail;
+}
+
+
+void serialWrite(unsigned char c) {
+	
+	if ((!(UCSR0A & (1 << UDRE0)))
+		|| (tx_buffer_head != tx_buffer_tail)) {
+		// maybe checking if buffer is empty is not necessary, 
+		// not sure if there can be a state when the data register empty flag is set
+		// and read here without the interrupt being executed
+		// well, it shouldn't happen, right?
+		
+		// data register is not empty, use the buffer
+		unsigned char newhead = tx_buffer_head + 1;
+		newhead %= TX_BUFFER_SIZE;
+		
+		// wait until there's a space in the buffer
+		while (newhead == tx_buffer_tail) ;
+		
+		tx_buffer[tx_buffer_head] = c;
+		tx_buffer_head = newhead;
+		
+		// enable the Data Register Empty Interrupt
+		UCSR0B |=  (1 << UDRIE0);
+		
+	} else {
+		// no need to wait
+		UDR0 = c;
+	}
+}
+
+#else // unbuffered output
+
+void serialWrite(unsigned char c)
+{
+	while (!(UCSR0A & (1 << UDRE0)))
+		;
+	
+	UDR0 = c;
+}
+
+#endif // (un/)buffered output
+
 
 // void printMode(int mode)
 // {
@@ -210,3 +318,13 @@ void print(const char *format, ...)
 	printString(buf);
 }
 */
+
+void print_newline()
+{
+	printPgmString(PSTR("\n\r"));
+}
+
+void print_timed_out()
+{
+	printPgmString(PSTR("Timed out"));
+}

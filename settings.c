@@ -53,6 +53,8 @@ void settings_reset() {
 }
 
 void settings_dump() {
+  // MM_COMMENT - I added $10
+  printPgmString(PSTR("$10=0 (resets to defaut settings. Reboot for them to take effect.)\r\n"));
   printPgmString(PSTR("$0 = ")); printFloat(settings.steps_per_mm[X_AXIS]);
   printPgmString(PSTR(" (steps/mm x)\r\n$1 = ")); printFloat(settings.steps_per_mm[Y_AXIS]);
   printPgmString(PSTR(" (steps/mm y)\r\n$2 = ")); printFloat(settings.steps_per_mm[Z_AXIS]);
@@ -107,6 +109,7 @@ void settings_store_setting(int parameter, double value) {
     case 7: settings.invert_mask = trunc(value); break;
     case 8: settings.acceleration = value; break;
     case 9: settings.max_jerk = fabs(value); break;
+	  case 10: settings_reset(); break;
     default: 
       printPgmString(PSTR("Unknown parameter\r\n"));
       return;

@@ -21,37 +21,41 @@
 #ifndef config_h
 #define config_h
 
-#define BAUD_RATE 9600
+#include "mm_constants.h"
+
+//#define BAUD_RATE 9600
 
 // Updated default pin-assignments from 0.6 onwards 
 // (see bottom of file for a copy of the old config)
 
-#define STEPPERS_ENABLE_DDR     DDRB
-#define STEPPERS_ENABLE_PORT    PORTB
-#define STEPPERS_ENABLE_BIT         0
+#define STEPPERS_ENABLE_DDR     DDRD
+#define STEPPERS_ENABLE_PORT    PORTD
+// COMMENT_MM - This bit is used to signal the board that the 
+// signals to the stepper motors are now OK
+#define STEPPERS_ENABLE_BIT         2
 
-#define STEPPING_DDR       DDRD
-#define STEPPING_PORT      PORTD
-#define X_STEP_BIT           2
-#define Y_STEP_BIT           3
-#define Z_STEP_BIT           4
-#define X_DIRECTION_BIT      5
-#define Y_DIRECTION_BIT      6
-#define Z_DIRECTION_BIT      7
+//#define STEPPING_DDR       DDRD
+//#define STEPPING_PORT      PORTD
+//#define X_STEP_BIT           2
+//#define Y_STEP_BIT           3
+//#define Z_STEP_BIT           4
+//#define X_DIRECTION_BIT      5
+//#define Y_DIRECTION_BIT      6
+//#define Z_DIRECTION_BIT      7
 
-#define LIMIT_DDR      DDRB
-#define LIMIT_PORT     PORTB
-#define X_LIMIT_BIT          1
-#define Y_LIMIT_BIT          2
-#define Z_LIMIT_BIT          3
+//#define LIMIT_DDR      DDRB
+//#define LIMIT_PORT     PORTB
+//#define X_LIMIT_BIT          1
+//#define Y_LIMIT_BIT          2
+//#define Z_LIMIT_BIT          3
 
-#define SPINDLE_ENABLE_DDR DDRB
-#define SPINDLE_ENABLE_PORT PORTB
-#define SPINDLE_ENABLE_BIT 4
+#define SPINDLE_ENABLE_DDR DDRD
+#define SPINDLE_ENABLE_PORT PORTD
+#define SPINDLE_ENABLE_BIT 6
 
-#define SPINDLE_DIRECTION_DDR DDRB
-#define SPINDLE_DIRECTION_PORT PORTB
-#define SPINDLE_DIRECTION_BIT 5
+//#define SPINDLE_DIRECTION_DDR DDRB
+//#define SPINDLE_DIRECTION_PORT PORTB
+//#define SPINDLE_DIRECTION_BIT 5
 
 // The temporal resolution of the acceleration management subsystem. Higher number
 // give smoother acceleration but may impact performance

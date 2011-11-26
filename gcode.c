@@ -31,12 +31,18 @@
 #include "spindle_control.h"
 #include "errno.h"
 #include "serial_protocol.h"
+#include "cap_control.h"
 
 #define MM_PER_INCH (25.4)
 
 #define NEXT_ACTION_DEFAULT 0
 #define NEXT_ACTION_DWELL 1
 #define NEXT_ACTION_GO_HOME 2
+#define NEXT_ACTION_MEASURE_CAP 3
+#define NEXT_ACTION_MILL_GO_HOME 4
+#define NEXT_ACTION_CUR_POS_IS_ORIGIN 5
+#define NEXT_ACTION_TURN_OFF_ACCEL 6
+#define NEXT_ACTION_TURN_ON_ACCEL 7
 
 #define MOTION_MODE_SEEK 0 // G0 
 #define MOTION_MODE_LINEAR 1 // G1
@@ -136,7 +142,12 @@ uint8_t gc_execute_line(char *line) {
   
   double p = 0, r = 0;
   int int_value;
-  
+
+	double homing_dist_to_move = 0;
+	double homing_threshold = 0;
+	uint16_t homing_max_number_of_times = 0;
+	uint8_t spindle_changed = FALSE;
+	
   clear_vector(target);
   clear_vector(offset);
 
@@ -150,6 +161,7 @@ uint8_t gc_execute_line(char *line) {
   if (line[0] == '$') { 
     // Parameter lines are on the form '$4=374.3' or '$' to dump current settings
     char_counter = 1;
+    if(line[char_counter] == '$') { sp_millInfo(); return(GCSTATUS_OK); }
     if(line[char_counter] == 0) { settings_dump(); return(GCSTATUS_OK); }
     read_double(line, &char_counter, &p);
     if(line[char_counter++] != '=') { return(GCSTATUS_UNSUPPORTED_STATEMENT); }
@@ -167,24 +179,52 @@ uint8_t gc_execute_line(char *line) {
     switch(letter) {
       case 'G':
       switch(int_value) {
+        // rapid positioning  
         case 0: gc.motion_mode = MOTION_MODE_SEEK; break;
+		// linear interpolation
         case 1: gc.motion_mode = MOTION_MODE_LINEAR; break;
-#ifdef __AVR_ATmega328P__        
-        case 2: gc.motion_mode = MOTION_MODE_CW_ARC; break;
+#ifdef __AVR_ATmega328P__   
+        // circular/helical interpolation (clockwise)
+        case 2: gc.motion_mode = MOTION_MODE_CW_ARC; break; 
+        // circular/helical interpolation (counter-clockwise)
         case 3: gc.motion_mode = MOTION_MODE_CCW_ARC; break;
-#endif        
+#endif  
+		// dwell
         case 4: next_action = NEXT_ACTION_DWELL; break;
+        // xy plane selection
         case 17: select_plane(X_AXIS, Y_AXIS, Z_AXIS); break;
+        // xz plane selection
         case 18: select_plane(X_AXIS, Z_AXIS, Y_AXIS); break;
+        // yz plane selection
         case 19: select_plane(Y_AXIS, Z_AXIS, X_AXIS); break;
+        // inch system selection
         case 20: gc.inches_mode = TRUE; break;
+        // millimeter system selection
         case 21: gc.inches_mode = FALSE; break;
-        case 28: case 30: next_action = NEXT_ACTION_GO_HOME; break;
+        // 28: Return to home position (machine zero)
+		// 30: Return to secondary home position
+		case 28: next_action = NEXT_ACTION_GO_HOME; break;
+		// MM_COMMENT - non standard Gcode usage
+		case 30: next_action = NEXT_ACTION_MILL_GO_HOME; break;
+		// MM_COMMENT - non standard Gcode usage
+  		case 31: next_action = NEXT_ACTION_MEASURE_CAP; break;
+		// MM_COMMENT - non standard Gcode usage
+   	    case 34: next_action = NEXT_ACTION_CUR_POS_IS_ORIGIN; break;
+		// MM_COMMENT - non standard Gcode usage
+		case 35: next_action = NEXT_ACTION_TURN_OFF_ACCEL; break;
+		// MM_COMMENT - non standard Gcode usage	  
+		case 36: next_action = NEXT_ACTION_TURN_ON_ACCEL; break;
+        // motion in machine coordinate system
         case 53: absolute_override = TRUE; break;
+		// Cancel canned cycle
         case 80: gc.motion_mode = MOTION_MODE_CANCEL; break;
+        // Absolute Programming
         case 90: gc.absolute_mode = TRUE; break;
+        // Incremental programming
         case 91: gc.absolute_mode = FALSE; break;
+        // ??
         case 93: gc.inverse_feed_rate_mode = TRUE; break;
+        // Feedrate per minute
         case 94: gc.inverse_feed_rate_mode = FALSE; break;
         default: FAIL(GCSTATUS_UNSUPPORTED_STATEMENT);
       }
@@ -192,11 +232,19 @@ uint8_t gc_execute_line(char *line) {
       
       case 'M':
       switch(int_value) {
+	    // 0: Compulsory stop
+	    // 1: Optional stop - stops if operator has pushed the optional stop button
         case 0: case 1: gc.program_flow = PROGRAM_FLOW_PAUSED; break;
+	    // 2: End of program
+	    // 30: End of program with return to program top
+	    // 60: Automatic pallet change (APC) ??
         case 2: case 30: case 60: gc.program_flow = PROGRAM_FLOW_COMPLETED; break;
-        case 3: gc.spindle_direction = 1; break;
-        case 4: gc.spindle_direction = -1; break;
-        case 5: gc.spindle_direction = 0; break;
+	    // Spindle on (clockwise rotation)
+		  case 3: gc.spindle_direction = 1; spindle_changed = TRUE; break;
+	    // Spindle on (counterclockwise rotation)
+		 // case 4: gc.spindle_direction = -1; spindle_changed = TRUE; break;
+	    // Spindle stop
+        case 5: gc.spindle_direction = 0; spindle_changed = TRUE; break;
         default: FAIL(GCSTATUS_UNSUPPORTED_STATEMENT);
       }            
       break;
@@ -212,15 +260,20 @@ uint8_t gc_execute_line(char *line) {
   clear_vector(offset);
   memcpy(target, gc.position, sizeof(target)); // i.e. target = gc.position
 
+  double homing_feed_rate = gc.feed_rate;
+	
   // Pass 2: Parameters
   while(next_statement(&letter, &value, line, &char_counter)) {
     int_value = trunc(value);
     unit_converted_value = to_millimeters(value);
     switch(letter) {
+	// Feed rate
       case 'F': 
       if (gc.inverse_feed_rate_mode) {
         inverse_feed_rate = unit_converted_value; // seconds per motion for this motion only
-      } else {          
+      } else if (next_action == NEXT_ACTION_MILL_GO_HOME || next_action == NEXT_ACTION_GO_HOME) {
+		homing_feed_rate = unit_converted_value/60;
+	  } else {          
         if (gc.motion_mode == MOTION_MODE_SEEK) {
           gc.seek_rate = unit_converted_value/60;
         } else {
@@ -228,10 +281,20 @@ uint8_t gc_execute_line(char *line) {
         }
       }
       break;
+	  // I Defines arc size in X axis for G02 or G03 arc commands 
+	  // J Defines arc size in Y axis for G02 or G03 arc commands
+	  // K Defines arc size in Z axis for G02 or G03 arc commands
       case 'I': case 'J': case 'K': offset[letter-'I'] = unit_converted_value; break;
+	  // Serves as parameter adress for various G and M codes.
+	  // With G04 defines dwell time.
       case 'P': p = value; break;
+	  // Defines size of arc radius or defines retrace height in canned cycles
       case 'R': r = unit_converted_value; radius_mode = TRUE; break;
+	  // Speed. Spindle speed or surface speed. 
       case 'S': gc.spindle_speed = value; break;
+	  // Absolute or incremental position of X axis
+	  // Absolute or incremental position of Y axis
+	  // Absolute or incremental position of Z axis
       case 'X': case 'Y': case 'Z':
       if (gc.absolute_mode || absolute_override) {
         target[letter - 'X'] = unit_converted_value;
@@ -239,6 +302,11 @@ uint8_t gc_execute_line(char *line) {
         target[letter - 'X'] += unit_converted_value;
       }
       break;
+		case 'A': homing_dist_to_move = unit_converted_value;		break;
+			// B - direction (Y)
+		case 'B': homing_threshold = value;		break;
+			// C - direction (Z)				
+		case 'C': homing_max_number_of_times = (uint16_t)trunc(value);		break;	
     }
   }
   
@@ -246,24 +314,61 @@ uint8_t gc_execute_line(char *line) {
   if (gc.status_code) { return(gc.status_code); }
     
   // Update spindle state
-  if (gc.spindle_direction) {
-    spindle_run(gc.spindle_direction, gc.spindle_speed);
-  } else {
-    spindle_stop();
-  }
+	if(spindle_changed)
+	{
+	  if (gc.spindle_direction) {
+		  // synchronize (get the mill head to catch up with where we think we are)
+		  mc_dwell(0);
+		  spindle_run(gc.spindle_direction, gc.spindle_speed);
+	  } else {
+		  // synchronize (get the mill head to catch up with where we think we are)
+		  mc_dwell(0);
+		  spindle_stop();
+	  }
+	}
   
+	//TODO_MM - ensure that anything that clears out the position to 0,0,0 in motion_contrl
+	// also clears out the gc.position in this file
+	
   // Perform any physical actions
-  switch (next_action) {
-    case NEXT_ACTION_GO_HOME: mc_go_home(); break;
-    case NEXT_ACTION_DWELL: mc_dwell(trunc(p*1000)); break;
+  switch (next_action) {		  
+    case NEXT_ACTION_GO_HOME: 
+		  mc_do_homing_with_params((int)trunc(p), homing_feed_rate, homing_dist_to_move, homing_threshold, homing_max_number_of_times, gc.position);
+  		  target[(int)trunc(p)] = 0;
+		  break;
+	  case NEXT_ACTION_MILL_GO_HOME: 
+		  mc_dwell(0);
+		  mc_do_mill_homing_with_params(homing_feed_rate, homing_dist_to_move, homing_threshold, homing_max_number_of_times, gc.position);
+  		  target[2] = 0;
+		  break;		  
+	  case NEXT_ACTION_CUR_POS_IS_ORIGIN: 
+		  mc_cur_pos_is_origin(trunc(p), gc.position);
+		  if( trunc(p) == -1)
+		  {
+			  target[0] = 0;
+			  target[1] = 0;
+			  target[2] = 0;
+		  } else if(trunc(p) >= 0 && trunc(p) <= 2)
+		  {
+			  target[(int)trunc(p)] = 0;
+		  }
+		  break;		  
+	  case NEXT_ACTION_TURN_OFF_ACCEL:
+		  plan_set_acceleration_manager_enabled(FALSE);
+		  break;
+	  case NEXT_ACTION_TURN_ON_ACCEL:
+		  plan_set_acceleration_manager_enabled(TRUE);
+		  break;
+	case NEXT_ACTION_DWELL: mc_dwell(trunc(p*1000)); break;
+	case NEXT_ACTION_MEASURE_CAP: cc_measure_cap(trunc(p)); break;
     case NEXT_ACTION_DEFAULT: 
     switch (gc.motion_mode) {
       case MOTION_MODE_CANCEL: break;
       case MOTION_MODE_SEEK:
-      mc_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], gc.seek_rate, FALSE);
+      plan_buffer_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], gc.seek_rate, FALSE);
       break;
       case MOTION_MODE_LINEAR:
-      mc_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], 
+      plan_buffer_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], 
         (gc.inverse_feed_rate_mode) ? inverse_feed_rate : gc.feed_rate, gc.inverse_feed_rate_mode);
       break;
 #ifdef __AVR_ATmega328P__
@@ -394,7 +499,7 @@ uint8_t gc_execute_line(char *line) {
         (gc.inverse_feed_rate_mode) ? inverse_feed_rate : gc.feed_rate, gc.inverse_feed_rate_mode,
         gc.position);
       // Finish off with a line to make sure we arrive exactly where we think we are
-      mc_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], 
+      plan_buffer_line(target[X_AXIS], target[Y_AXIS], target[Z_AXIS], 
         (gc.inverse_feed_rate_mode) ? inverse_feed_rate : gc.feed_rate, gc.inverse_feed_rate_mode);
       break;
 #endif      
@@ -438,11 +543,11 @@ int read_double(char *line,               //!< string: line of RS274/NGC code be
   *double_ptr = strtod(start, &end);
   if(end == start) { 
     FAIL(GCSTATUS_BAD_NUMBER_FORMAT); 
-    return(0); 
+    return(FALSE); 
   };
 
   *char_counter = end - line;
-  return(1);
+  return(TRUE);
 }
 
 /* 

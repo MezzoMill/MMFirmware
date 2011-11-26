@@ -64,15 +64,16 @@
 #include "wiring_serial.h"
 
 // The number of linear motions that can be in the plan at any give time
+// MM_COMMENT - must be a power of 2 less than 128
 #ifdef __AVR_ATmega328P__
-#define BLOCK_BUFFER_SIZE 20
+#define BLOCK_BUFFER_SIZE 16
 #else
-#define BLOCK_BUFFER_SIZE 5
+#define BLOCK_BUFFER_SIZE 4
 #endif
 
 static block_t block_buffer[BLOCK_BUFFER_SIZE];  // A ring buffer for motion instructions
-static volatile int block_buffer_head;           // Index of the next block to be pushed
-static volatile int block_buffer_tail;           // Index of the block to process now
+static volatile uint8_t block_buffer_head;           // Index of the next block to be pushed
+static volatile uint8_t block_buffer_tail;           // Index of the block to process now
 
 // The current position of the tool in absolute steps
 static int32_t position[3];   
@@ -214,13 +215,14 @@ void planner_reverse_pass_kernel(block_t *previous, block_t *current, block_t *n
 // planner_recalculate() needs to go over the current plan twice. Once in reverse and once forward. This 
 // implements the reverse pass.
 void planner_reverse_pass() {
-  auto int8_t block_index = block_buffer_head;
+  auto uint8_t block_index = block_buffer_head;
   block_t *block[3] = {NULL, NULL, NULL};
-  while(block_index != block_buffer_tail) {    
-    block_index--;
-    if(block_index < 0) {
+  while(block_index != block_buffer_tail) {
+    if(block_index == 0) {
       block_index = BLOCK_BUFFER_SIZE-1;
-    }
+    } else {
+	  block_index--;
+	}
     block[2]= block[1];
     block[1]= block[0];
     block[0] = &block_buffer[block_index];
@@ -251,7 +253,7 @@ void planner_forward_pass_kernel(block_t *previous, block_t *current, block_t *n
 // planner_recalculate() needs to go over the current plan twice. Once in reverse and once forward. This 
 // implements the forward pass.
 void planner_forward_pass() {
-  int8_t block_index = block_buffer_tail;
+  uint8_t block_index = block_buffer_tail;
   block_t *block[3] = {NULL, NULL, NULL};
   
   while(block_index != block_buffer_head) {
@@ -259,7 +261,8 @@ void planner_forward_pass() {
     block[1] = block[2];
     block[2] = &block_buffer[block_index];
     planner_forward_pass_kernel(block[0],block[1],block[2]);
-    block_index = (block_index+1) % BLOCK_BUFFER_SIZE;
+	block_index = (block_index+1);
+	block_index = block_index % BLOCK_BUFFER_SIZE;
   }
   planner_forward_pass_kernel(block[1], block[2], NULL);
 }
@@ -268,7 +271,7 @@ void planner_forward_pass() {
 // entry_factor for each junction. Must be called by planner_recalculate() after 
 // updating the blocks.
 void planner_recalculate_trapezoids() {
-  int8_t block_index = block_buffer_tail;
+  uint8_t block_index = block_buffer_tail;
   block_t *current;
   block_t *next = NULL;
   
@@ -278,7 +281,8 @@ void planner_recalculate_trapezoids() {
     if (current) {
       calculate_trapezoid_for_block(current, current->entry_factor, next->entry_factor);      
     }
-    block_index = (block_index+1) % BLOCK_BUFFER_SIZE;
+	  block_index = (block_index+1);
+	  block_index = block_index % BLOCK_BUFFER_SIZE;
   }
   calculate_trapezoid_for_block(next, next->entry_factor, factor_for_safe_speed(next));
 }
@@ -324,9 +328,20 @@ int plan_is_acceleration_manager_enabled() {
   return(acceleration_manager_enabled);
 }
 
+void plan_redefine_current_position(double x, double y, double z)
+{
+	st_synchronize();
+	int32_t target[3];
+	target[X_AXIS] = lround(x*settings.steps_per_mm[X_AXIS]);
+	target[Y_AXIS] = lround(y*settings.steps_per_mm[Y_AXIS]);
+	target[Z_AXIS] = lround(z*settings.steps_per_mm[Z_AXIS]);  
+	memcpy(position, target, sizeof(target)); // position[] = target[]
+}
+
 inline void plan_discard_current_block() {
   if (block_buffer_head != block_buffer_tail) {
-    block_buffer_tail = (block_buffer_tail + 1) % BLOCK_BUFFER_SIZE;  
+	  block_buffer_tail = (block_buffer_tail + 1);
+	  block_buffer_tail = block_buffer_tail % BLOCK_BUFFER_SIZE;  
   }
 }
 
@@ -348,10 +363,23 @@ void plan_buffer_line(double x, double y, double z, double feed_rate, int invert
   target[Z_AXIS] = lround(z*settings.steps_per_mm[Z_AXIS]);     
   
   // Calculate the buffer head after we push this byte
-	int next_buffer_head = (block_buffer_head + 1) % BLOCK_BUFFER_SIZE;	
+	uint8_t next_buffer_head = (block_buffer_head + 1);
+	next_buffer_head = next_buffer_head % BLOCK_BUFFER_SIZE;	
 	// If the buffer is full: good! That means we are well ahead of the robot. 
 	// Rest here until there is room in the buffer.
-  while(block_buffer_tail == next_buffer_head) { sleep_mode(); }
+	uint8_t bufferWasFull = block_buffer_tail == next_buffer_head;
+	if( bufferWasFull)
+	{
+		//printPgmString(PSTR("::buf_full::\r\n"));
+	}
+	while(block_buffer_tail == next_buffer_head) { 
+		st_pause_wait_resume();
+		sleep_mode(); 
+	}
+	if(bufferWasFull)
+	{
+		//printPgmString(PSTR("::not_full::\r\n"));
+	}
   // Prepare to set up new block
   block_t *block = &block_buffer[block_buffer_head];
   // Number of steps for each axis

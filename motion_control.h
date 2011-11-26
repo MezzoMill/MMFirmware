@@ -27,7 +27,7 @@
 // Execute linear motion in absolute millimeter coordinates. Feed rate given in millimeters/second
 // unless invert_feed_rate is true. Then the feed_rate means that the motion should be completed in
 // (1 minute)/feed_rate time.
-#define mc_line(x, y, z, feed_rate, invert_feed_rate) plan_buffer_line(x, y, z, feed_rate, invert_feed_rate) 
+// #define mc_line(x, y, z, feed_rate, invert_feed_rate) plan_buffer_line(x, y, z, feed_rate, invert_feed_rate) 
 // NOTE: Although this function structurally belongs in this module, there is nothing to do but
 // to forward the request to the planner. For efficiency the function is implemented with a macro.
 
@@ -44,6 +44,11 @@ void mc_arc(double theta, double angular_travel, double radius, double linear_tr
 void mc_dwell(uint32_t milliseconds);
 
 // Send the tool home (not implemented)
-void mc_go_home();
+// void mc_go_home();
+
+void mc_do_homing_with_params(int axis, double feedRate, double moveVal, double thresholdToStop, uint16_t maxNumTimesToMove, double *position);
+void mc_do_mill_homing_with_params(double feedRate, double moveVal, double thresholdToStop, uint16_t maxNumTimesToMove, double *position);
+
+void mc_cur_pos_is_origin(int selection, double *position);
 
 #endif

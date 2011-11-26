@@ -25,7 +25,7 @@
 #ifndef wiring_h
 #define wiring_h
 
-void beginSerial(long);
+void beginSerial();
 void serialWrite(unsigned char);
 int serialAvailable(void);
 int serialRead(void);
@@ -41,5 +41,8 @@ void printOctal(unsigned long n);
 void printBinary(unsigned long n);
 void printIntegerInBase(unsigned long n, unsigned long base);
 void printFloat(double n);
+
+void print_newline();
+void print_timed_out();
 
 #endif

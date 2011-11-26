@@ -73,4 +73,7 @@ void plan_set_acceleration_manager_enabled(int enabled);
 // Is acceleration-management currently enabled?
 int plan_is_acceleration_manager_enabled();
 
+// Set the internal position in the motion planner.
+void plan_redefine_current_position(double x, double y, double z);
+
 #endif

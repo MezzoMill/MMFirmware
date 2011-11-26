@@ -37,12 +37,14 @@
 
 int main(void)
 {
+  sp_init_must_be_first();	
   sp_init();        
   settings_init();  
   plan_init();      
   st_init();        
   spindle_init();   
-  gc_init();        
+  gc_init();
+  cc_init();        
                     
   for(;;){
     sleep_mode(); // Wait for it ...
